@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "author": "langgenius",
+  "name": "ollama",
+  "version": "1.0.2",
+  "identifier": "langgenius/ollama:1.0.2@ef203a332d1b2b8952dbaa012be70be3e0a2d576b001489fb3b070efc970ffbe",
+  "download_url": "https://marketplace.dify.ai/api/v1/plugins/langgenius/ollama/1.0.2/download",
+  "sha256": "d5c96814544da173edaeefc6c692904a57b71d950558e8735677a081bd9e9c8f",
+  "size_bytes": 915954,
+  "retrieved_at": "2026-10-22"
+}

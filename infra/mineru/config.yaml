@@ -1,0 +1,4 @@
+model:
+  source: local
+  base_dir: /models/models
+  small_backend: onnx

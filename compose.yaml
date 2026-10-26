@@ -1,0 +1,184 @@
+name: talent-agent
+x-app: &app
+  image: talent-agent-api:0.1.0
+  build: {context: ., dockerfile: Dockerfile}
+  restart: unless-stopped
+  init: true
+  environment: &app-env
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-talent}:${POSTGRES_PASSWORD:?run scripts/start.ps1 first}@postgres:5432/${POSTGRES_DB:-talent}
+    REDIS_URL: redis://redis:6379/0
+    MILVUS_URL: http://milvus:19530
+    OLLAMA_URL: http://ollama:11434
+    MINERU_URL: http://mineru:8001
+    CHAT_MODEL: ${CHAT_MODEL:-qwen3:4b}
+    EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+    EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
+    JWT_SECRET: ${JWT_SECRET:?run scripts/start.ps1 first}
+    ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:?run scripts/start.ps1 first}
+    DATA_DIR: /data
+    LANGCHAIN_TRACING_V2: "false"
+    LANGCHAIN_TRACING: "false"
+    ANONYMIZED_TELEMETRY: "false"
+  volumes: ["./data:/data"]
+  networks: [private]
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+    milvus: {condition: service_healthy}
+    mineru: {condition: service_healthy}
+    ollama: {condition: service_started}
+services:
+  web:
+    image: talent-agent-web:0.1.0
+    build: {context: ., dockerfile: infra/frontend.Dockerfile}
+    restart: unless-stopped
+    ports: ["127.0.0.1:${WEB_PORT:-8080}:8080"]
+    networks: [private, ingress]
+    depends_on:
+      api: {condition: service_healthy}
+  api:
+    <<: *app
+    command: ["uvicorn", "talent.api:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health',timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      start_period: 60s
+      retries: 12
+  worker:
+    <<: *app
+    command: ["celery", "-A", "talent.worker:celery_app", "worker", "-Q", "control,match,index,ingest", "--concurrency=1", "--prefetch-multiplier=1", "--loglevel=INFO"]
+    depends_on:
+      api: {condition: service_healthy}
+  beat:
+    <<: *app
+    command: ["celery", "-A", "talent.worker:celery_app", "beat", "--schedule=/data/celerybeat-schedule", "--loglevel=INFO"]
+    depends_on:
+      api: {condition: service_healthy}
+  postgres:
+    image: postgres:16.10-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-talent}
+      POSTGRES_DB: ${POSTGRES_DB:-talent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/start.ps1 first}
+    volumes: ["postgres:/var/lib/postgresql/data"]
+    networks: [private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  redis:
+    image: redis:7.4.5-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes: ["redis:/data"]
+    networks: [private]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: ["etcd", "-advertise-client-urls=http://etcd:2379", "-listen-client-urls=http://0.0.0.0:2379", "--data-dir=/etcd"]
+    volumes: ["etcd:/etcd"]
+    networks: [private]
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-talentstorage}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run scripts/start.ps1 first}
+    command: ["minio", "server", "/minio_data", "--console-address", ":9001"]
+    volumes: ["minio:/minio_data"]
+    networks: [private]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+  milvus:
+    image: milvusdb/milvus:v2.6.16
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    security_opt: ["seccomp:unconfined"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-talentstorage}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run scripts/start.ps1 first}
+      MINIO_REGION: us-east-1
+    volumes: ["milvus:/var/lib/milvus"]
+    networks: [private]
+    depends_on:
+      etcd: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 10s
+      start_period: 90s
+      retries: 20
+  mineru:
+    image: talent-agent-mineru:4.0.12
+    build: {context: ., dockerfile: infra/mineru/Dockerfile}
+    restart: unless-stopped
+    init: true
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_MODEL_SMALL_BACKEND: onnx
+      HF_HUB_OFFLINE: "1"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+    volumes: ["mineru-models:/models"]
+    networks: [private]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health',timeout=5)"]
+      interval: 20s
+      timeout: 10s
+      start_period: 60s
+      retries: 20
+  prepare-models:
+    image: talent-agent-mineru:4.0.12
+    build: {context: ., dockerfile: infra/mineru/Dockerfile}
+    profiles: [prepare]
+    environment:
+      MINERU_MODEL_SOURCE: ${MINERU_DOWNLOAD_SOURCE:-huggingface}
+      HF_HUB_OFFLINE: "0"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      DO_NOT_TRACK: "1"
+    volumes: ["mineru-models:/models"]
+    networks: [prepare]
+    command: ["sh", "-c", "mineru-kit models download --tier basic --small-backend onnx && mineru-kit models verify --tier basic --small-backend onnx"]
+  ollama:
+    image: nginx:1.28.0-alpine
+    restart: unless-stopped
+    volumes: ["./infra/ollama.conf:/etc/nginx/conf.d/default.conf:ro"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks: [private, ollama-host]
+networks:
+  private: {internal: true}
+  ingress: {}
+  ollama-host: {}
+  prepare: {}
+volumes:
+  postgres: {}
+  redis: {}
+  etcd: {}
+  minio: {}
+  milvus: {}
+  mineru-models: {}

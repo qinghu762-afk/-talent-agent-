@@ -1,0 +1,1223 @@
+# Derived from official langgenius/dify tag 1.17.1; see infra/dify/upstream.
+name: talent-platform
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.25@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: '1000'
+      ETCD_QUOTA_BACKEND_BYTES: '1073741824'
+      ETCD_SNAPSHOT_COUNT: '50000'
+    command:
+    - etcd
+    - -advertise-client-urls=http://etcd:2379
+    - -listen-client-urls=http://0.0.0.0:2379
+    - --data-dir=/etcd
+    volumes:
+    - etcd:/etcd
+    networks:
+    - data
+    healthcheck:
+      test:
+      - CMD
+      - etcdctl
+      - endpoint
+      - health
+      interval: 15s
+      timeout: 10s
+      retries: 12
+  minio:
+    image: minio/minio:RELEASE.2024-05-28T17-19-04Z@sha256:391d1d45fdbe79944cb6de9337b073864bb9ee38c4c24280bfb39572e925af08
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-talentstorage}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?run scripts/start.ps1 first}
+    command:
+    - minio
+    - server
+    - /minio_data
+    - --console-address
+    - :9001
+    volumes:
+    - minio:/minio_data
+    networks:
+    - data
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:9000/minio/health/live
+      interval: 15s
+      timeout: 10s
+      retries: 12
+  milvus:
+    image: milvusdb/milvus:v2.6.16@sha256:33a0f81a7343158a1c1e0454b151600074c34f561c069157712b930ca5ca1b04
+    restart: unless-stopped
+    command:
+    - milvus
+    - run
+    - standalone
+    security_opt:
+    - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-talentstorage}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?run scripts/start.ps1 first}
+      MINIO_REGION: us-east-1
+      COMMON_STORAGETYPE: remote
+      MQ_TYPE: rocksmq
+    volumes:
+    - milvus:/var/lib/milvus
+    networks:
+    - data
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:9091/healthz
+      interval: 15s
+      timeout: 10s
+      start_period: 90s
+      retries: 20
+  mineru:
+    image: talent-agent-mineru:4.0.12@sha256:294b3aa1183a728f474077f5223911e4f69e94847bddc9bbfd25c2c5dde55685
+    restart: unless-stopped
+    init: true
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_MODEL_SMALL_BACKEND: onnx
+      HF_HUB_OFFLINE: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      DO_NOT_TRACK: '1'
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+      MINERU_DEVICE_MODE: cpu
+    volumes:
+    - mineru-models:/models:ro
+    tmpfs:
+    - /models/models/.locks:uid=10002,gid=10002,mode=0700
+    networks:
+    - data
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8001/health',timeout=5)
+      interval: 20s
+      timeout: 10s
+      start_period: 60s
+      retries: 20
+    mem_limit: 4g
+  postgres:
+    image: postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?initialize configuration}
+      ANALYTICS_PASSWORD: ${ANALYTICS_PASSWORD:?initialize configuration}
+      CHECKPOINT_PASSWORD: ${CHECKPOINT_PASSWORD:?initialize configuration}
+      ANALYSIS_PASSWORD: ${ANALYSIS_PASSWORD:?initialize configuration}
+      DIFY_DB_PASSWORD: ${DIFY_DB_PASSWORD:?initialize configuration}
+      DIFY_PLUGIN_DB_PASSWORD: ${DIFY_PLUGIN_DB_PASSWORD:?initialize configuration}
+    volumes:
+    - postgres:/var/lib/postgresql/data
+    - ./infra/postgres-init.sh:/docker-entrypoint-initdb.d/20-platform.sh:ro
+    networks:
+    - data
+    - dify
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -U postgres -d postgres
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    command:
+    - postgres
+    - -c
+    - max_connections=160
+    - -c
+    - shared_buffers=128MB
+  mysql:
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?initialize configuration}
+      MYSQL_ROOT_HOST: '%'
+      MYSQL_DATABASE: talent
+      MYSQL_USER: talent
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?initialize configuration}
+      MYSQL_ANALYSIS_PASSWORD: ${MYSQL_ANALYSIS_PASSWORD:?initialize configuration}
+    volumes:
+    - mysql:/var/lib/mysql
+    - ./infra/mysql-init.sh:/docker-entrypoint-initdb.d/20-platform.sh:ro
+    networks:
+    - data
+    command:
+    - --innodb-buffer-pool-size=256M
+    - --max-connections=100
+    - --character-set-server=utf8mb4
+    - --collation-server=utf8mb4_0900_ai_ci
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h localhost --silent
+      interval: 10s
+      timeout: 5s
+      retries: 30
+  redis:
+    image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?initialize configuration}
+    entrypoint:
+    - /bin/sh
+    - -c
+    - exec redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+      --requirepass "$$REDIS_PASSWORD"
+    volumes:
+    - redis:/data
+    networks:
+    - data
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  dify-redis:
+    image: redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD:?initialize configuration}
+    entrypoint:
+    - /bin/sh
+    - -c
+    - exec redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
+      --requirepass "$$REDIS_PASSWORD"
+    volumes:
+    - dify-redis:/data
+    networks:
+    - dify
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  api:
+    image: talent-platform-api:0.2.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+    restart: unless-stopped
+    init: true
+    environment:
+      MYSQL_URL: mysql+asyncmy://talent:${MYSQL_PASSWORD}@mysql:3306/talent
+      POSTGRES_URL: postgresql+asyncpg://talent_analytics:${ANALYTICS_PASSWORD}@postgres:5432/talent_analytics
+      CHECKPOINT_DATABASE_URL: postgresql://talent_checkpoint:${CHECKPOINT_PASSWORD}@postgres:5432/talent_checkpoint
+      ANALYSIS_DATABASE_URL: postgresql://talent_readonly:${ANALYSIS_PASSWORD}@postgres:5432/talent_analytics
+      MYSQL_ANALYSIS_URL: mysql+pymysql://talent_readonly:${MYSQL_ANALYSIS_PASSWORD}@mysql:3306/talent
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      MILVUS_URL: http://milvus:19530
+      OLLAMA_URL: http://model-gateway:11434
+      DIFY_API_URL: http://dify-api:5001/v1
+      DIFY_APP_KEY: ${DIFY_APP_KEY:-}
+      DIFY_APP_ID: ${DIFY_APP_ID:-}
+      DIFY_WORKFLOW_HASH: ${DIFY_WORKFLOW_HASH:-}
+      CHAT_MODEL_DIGEST: ${CHAT_MODEL_DIGEST:-}
+      EMBEDDING_MODEL_DIGEST: ${EMBEDDING_MODEL_DIGEST:-}
+      PROMPT_VERSION: ${PROMPT_VERSION:-local-v2}
+      DIFY_DATASET_KEY: ${DIFY_DATASET_KEY:-}
+      DIFY_CONSOLE_URL: http://127.0.0.1:18081
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3:4b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      EMBEDDING_DIMENSION: '1024'
+      PARSER_URL: http://mineru:8001
+      DIFY_PUBLIC_URL: http://127.0.0.1:18081
+      MINERU_URL: http://mineru:8001
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?initialize configuration}
+      JWT_SECRET: ${JWT_SECRET:?initialize configuration}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?initialize configuration}
+      DATA_DIR: /data
+      AI_SERVICE_URL: http://ai:8001
+      ANALYTICS_SERVICE_URL: http://analytics:8002
+      LANGCHAIN_TRACING_V2: 'false'
+      ANONYMIZED_TELEMETRY: 'false'
+    volumes:
+    - app-data:/data
+    - ./infra:/bootstrap:ro
+    networks:
+      data:
+        aliases:
+        - platform-api
+      application: {}
+    command:
+    - uvicorn
+    - talent_platform.api:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    - --no-access-log
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health',timeout=5)
+      interval: 20s
+      timeout: 10s
+      start_period: 60s
+      retries: 12
+  ai:
+    image: talent-platform-api:0.2.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+    restart: unless-stopped
+    init: true
+    environment:
+      MYSQL_URL: mysql+asyncmy://talent:${MYSQL_PASSWORD}@mysql:3306/talent
+      POSTGRES_URL: postgresql+asyncpg://talent_analytics:${ANALYTICS_PASSWORD}@postgres:5432/talent_analytics
+      CHECKPOINT_DATABASE_URL: postgresql://talent_checkpoint:${CHECKPOINT_PASSWORD}@postgres:5432/talent_checkpoint
+      ANALYSIS_DATABASE_URL: postgresql://talent_readonly:${ANALYSIS_PASSWORD}@postgres:5432/talent_analytics
+      MYSQL_ANALYSIS_URL: mysql+pymysql://talent_readonly:${MYSQL_ANALYSIS_PASSWORD}@mysql:3306/talent
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      MILVUS_URL: http://milvus:19530
+      OLLAMA_URL: http://model-gateway:11434
+      DIFY_API_URL: http://dify-api:5001/v1
+      DIFY_APP_KEY: ${DIFY_APP_KEY:-}
+      DIFY_APP_ID: ${DIFY_APP_ID:-}
+      DIFY_WORKFLOW_HASH: ${DIFY_WORKFLOW_HASH:-}
+      CHAT_MODEL_DIGEST: ${CHAT_MODEL_DIGEST:-}
+      EMBEDDING_MODEL_DIGEST: ${EMBEDDING_MODEL_DIGEST:-}
+      PROMPT_VERSION: ${PROMPT_VERSION:-local-v2}
+      DIFY_DATASET_KEY: ${DIFY_DATASET_KEY:-}
+      DIFY_CONSOLE_URL: http://127.0.0.1:18081
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3:4b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      EMBEDDING_DIMENSION: '1024'
+      PARSER_URL: http://mineru:8001
+      DIFY_PUBLIC_URL: http://127.0.0.1:18081
+      MINERU_URL: http://mineru:8001
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?initialize configuration}
+      JWT_SECRET: ${JWT_SECRET:?initialize configuration}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?initialize configuration}
+      DATA_DIR: /data
+      AI_SERVICE_URL: http://ai:8001
+      ANALYTICS_SERVICE_URL: http://analytics:8002
+      LANGCHAIN_TRACING_V2: 'false'
+      ANONYMIZED_TELEMETRY: 'false'
+    volumes:
+    - app-data:/data
+    - ./infra:/bootstrap:ro
+    networks:
+    - data
+    - application
+    command:
+    - uvicorn
+    - talent_platform.ai_service:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8001'
+    - --no-access-log
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8001/health',timeout=5)
+      interval: 20s
+      timeout: 10s
+      start_period: 60s
+      retries: 12
+  analytics:
+    image: talent-platform-api:0.2.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+    restart: unless-stopped
+    init: true
+    environment:
+      MYSQL_URL: mysql+asyncmy://talent:${MYSQL_PASSWORD}@mysql:3306/talent
+      POSTGRES_URL: postgresql+asyncpg://talent_analytics:${ANALYTICS_PASSWORD}@postgres:5432/talent_analytics
+      CHECKPOINT_DATABASE_URL: postgresql://talent_checkpoint:${CHECKPOINT_PASSWORD}@postgres:5432/talent_checkpoint
+      ANALYSIS_DATABASE_URL: postgresql://talent_readonly:${ANALYSIS_PASSWORD}@postgres:5432/talent_analytics
+      MYSQL_ANALYSIS_URL: mysql+pymysql://talent_readonly:${MYSQL_ANALYSIS_PASSWORD}@mysql:3306/talent
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      MILVUS_URL: http://milvus:19530
+      OLLAMA_URL: http://model-gateway:11434
+      DIFY_API_URL: http://dify-api:5001/v1
+      DIFY_APP_KEY: ${DIFY_APP_KEY:-}
+      DIFY_APP_ID: ${DIFY_APP_ID:-}
+      DIFY_WORKFLOW_HASH: ${DIFY_WORKFLOW_HASH:-}
+      CHAT_MODEL_DIGEST: ${CHAT_MODEL_DIGEST:-}
+      EMBEDDING_MODEL_DIGEST: ${EMBEDDING_MODEL_DIGEST:-}
+      PROMPT_VERSION: ${PROMPT_VERSION:-local-v2}
+      DIFY_DATASET_KEY: ${DIFY_DATASET_KEY:-}
+      DIFY_CONSOLE_URL: http://127.0.0.1:18081
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3:4b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      EMBEDDING_DIMENSION: '1024'
+      PARSER_URL: http://mineru:8001
+      DIFY_PUBLIC_URL: http://127.0.0.1:18081
+      MINERU_URL: http://mineru:8001
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?initialize configuration}
+      JWT_SECRET: ${JWT_SECRET:?initialize configuration}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?initialize configuration}
+      DATA_DIR: /data
+      AI_SERVICE_URL: http://ai:8001
+      ANALYTICS_SERVICE_URL: http://analytics:8002
+      LANGCHAIN_TRACING_V2: 'false'
+      ANONYMIZED_TELEMETRY: 'false'
+    volumes:
+    - app-data:/data
+    - ./infra:/bootstrap:ro
+    networks:
+    - data
+    - application
+    command:
+    - uvicorn
+    - talent_platform.analytics_service:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8002'
+    - --no-access-log
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:8002/health',timeout=5)
+      interval: 20s
+      timeout: 10s
+      start_period: 60s
+      retries: 12
+  worker:
+    image: talent-platform-api:0.2.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+    restart: unless-stopped
+    init: true
+    environment:
+      MYSQL_URL: mysql+asyncmy://talent:${MYSQL_PASSWORD}@mysql:3306/talent
+      POSTGRES_URL: postgresql+asyncpg://talent_analytics:${ANALYTICS_PASSWORD}@postgres:5432/talent_analytics
+      CHECKPOINT_DATABASE_URL: postgresql://talent_checkpoint:${CHECKPOINT_PASSWORD}@postgres:5432/talent_checkpoint
+      ANALYSIS_DATABASE_URL: postgresql://talent_readonly:${ANALYSIS_PASSWORD}@postgres:5432/talent_analytics
+      MYSQL_ANALYSIS_URL: mysql+pymysql://talent_readonly:${MYSQL_ANALYSIS_PASSWORD}@mysql:3306/talent
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      MILVUS_URL: http://milvus:19530
+      OLLAMA_URL: http://model-gateway:11434
+      DIFY_API_URL: http://dify-api:5001/v1
+      DIFY_APP_KEY: ${DIFY_APP_KEY:-}
+      DIFY_APP_ID: ${DIFY_APP_ID:-}
+      DIFY_WORKFLOW_HASH: ${DIFY_WORKFLOW_HASH:-}
+      CHAT_MODEL_DIGEST: ${CHAT_MODEL_DIGEST:-}
+      EMBEDDING_MODEL_DIGEST: ${EMBEDDING_MODEL_DIGEST:-}
+      PROMPT_VERSION: ${PROMPT_VERSION:-local-v2}
+      DIFY_DATASET_KEY: ${DIFY_DATASET_KEY:-}
+      DIFY_CONSOLE_URL: http://127.0.0.1:18081
+      CHAT_MODEL: ${CHAT_MODEL:-qwen3:4b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      EMBEDDING_DIMENSION: '1024'
+      PARSER_URL: http://mineru:8001
+      DIFY_PUBLIC_URL: http://127.0.0.1:18081
+      MINERU_URL: http://mineru:8001
+      INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?initialize configuration}
+      JWT_SECRET: ${JWT_SECRET:?initialize configuration}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?initialize configuration}
+      DATA_DIR: /data
+      AI_SERVICE_URL: http://ai:8001
+      ANALYTICS_SERVICE_URL: http://analytics:8002
+      LANGCHAIN_TRACING_V2: 'false'
+      ANONYMIZED_TELEMETRY: 'false'
+    volumes:
+    - app-data:/data
+    - ./infra:/bootstrap:ro
+    networks:
+    - data
+    - application
+    command:
+    - python
+    - -m
+    - talent_platform.worker
+    depends_on:
+      api:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai:
+        condition: service_healthy
+      analytics:
+        condition: service_healthy
+  model-gateway:
+    image: talent-platform-gateway:0.2.0
+    build:
+      context: .
+      dockerfile: infra/gateway.Dockerfile
+      args:
+        HTTP_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+    restart: unless-stopped
+    environment:
+      OLLAMA_UPSTREAM: http://host.docker.internal:11434
+      MODEL_MAX_PENDING: '64'
+      MODEL_QUEUE_TIMEOUT: '900'
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    networks:
+    - data
+    - dify
+    - egress
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://localhost:11434/health',timeout=5)
+      interval: 20s
+      timeout: 5s
+      retries: 10
+  web:
+    image: talent-platform-web:0.2.0
+    build:
+      context: .
+      dockerfile: infra/frontend.Dockerfile
+      args:
+        HTTP_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+        HTTPS_PROXY: ${BUILD_PROXY:-http://host.docker.internal:7897}
+    restart: unless-stopped
+    ports:
+    - 127.0.0.1:18080:8080
+    networks:
+    - application
+    depends_on:
+      api:
+        condition: service_healthy
+  dify-init-permissions:
+    image: busybox@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616
+    command:
+    - sh
+    - -c
+    - "FLAG_FILE=\"/app/api/storage/.init_permissions\"\nif [ -f \"$${FLAG_FILE}\"\
+      \ ]; then\n  echo \"Permissions already initialized. Exiting.\"\n  exit 0\n\
+      fi\necho \"Initializing permissions for /app/api/storage\"\nchown -R 1001:1001\
+      \ /app/api/storage && touch \"$${FLAG_FILE}\"\necho \"Permissions initialized.\
+      \ Exiting.\"\n"
+    restart: 'no'
+    networks:
+    - dify
+    environment: {}
+    volumes:
+    - dify-storage:/app/api/storage
+  dify-api:
+    restart: unless-stopped
+    image: langgenius/dify-api:1.17.1@sha256:ceede5b903afaa20348f7ad80ebf847379dc56d886a99b9ec6a08913dacd7732
+    environment:
+      MODE: api
+      SENTRY_DSN: ${API_SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${API_SENTRY_TRACES_SAMPLE_RATE:-1.0}
+      SENTRY_PROFILES_SAMPLE_RATE: ${API_SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      PLUGIN_REMOTE_INSTALL_HOST: ${EXPOSE_PLUGIN_DEBUGGING_HOST:-localhost}
+      PLUGIN_REMOTE_INSTALL_PORT: ${EXPOSE_PLUGIN_DEBUGGING_PORT:-5003}
+      PLUGIN_MAX_PACKAGE_SIZE: ${PLUGIN_MAX_PACKAGE_SIZE:-52428800}
+      PLUGIN_DAEMON_TIMEOUT: ${PLUGIN_DAEMON_TIMEOUT:-600.0}
+      INNER_API_KEY_FOR_PLUGIN: ${DIFY_INNER_KEY}
+      AGENT_BACKEND_BASE_URL: http://dify-agent-backend:5050
+      AGENT_BACKEND_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      DEPLOY_ENV: PRODUCTION
+      SECRET_KEY: ${DIFY_SECRET_KEY:?initialize configuration}
+      DB_TYPE: postgresql
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      DB_USERNAME: dify
+      DB_PASSWORD: ${DIFY_DB_PASSWORD}
+      DB_DATABASE: dify
+      REDIS_HOST: dify-redis
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD}
+      REDIS_DB: '0'
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD}@dify-redis:6379/1
+      STORAGE_TYPE: opendal
+      OPENDAL_SCHEME: fs
+      OPENDAL_FS_ROOT: storage
+      VECTOR_STORE: milvus
+      MILVUS_URI: http://milvus:19530
+      MILVUS_DATABASE: dify
+      MILVUS_USER: ''
+      MILVUS_PASSWORD: ''
+      MILVUS_ENABLE_HYBRID_SEARCH: 'true'
+      CODE_EXECUTION_ENDPOINT: http://dify-sandbox:8194
+      CODE_EXECUTION_API_KEY: ${DIFY_SANDBOX_KEY}
+      SSRF_PROXY_HTTP_URL: http://dify-ssrf-proxy:3128
+      SSRF_PROXY_HTTPS_URL: http://dify-ssrf-proxy:3128
+      PLUGIN_DAEMON_URL: http://dify-plugin-daemon:5002
+      PLUGIN_DAEMON_KEY: ${DIFY_PLUGIN_KEY}
+      PLUGIN_DIFY_INNER_API_KEY: ${DIFY_INNER_KEY}
+      DIFY_AGENT_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      CONSOLE_WEB_URL: http://127.0.0.1:18081
+      CONSOLE_API_URL: http://127.0.0.1:18081
+      APP_WEB_URL: http://127.0.0.1:18081
+      APP_API_URL: http://127.0.0.1:18081
+      SERVICE_API_URL: http://127.0.0.1:18081
+      FILES_URL: http://127.0.0.1:18081
+      INTERNAL_FILES_URL: http://dify-api:5001
+      SERVER_WORKER_AMOUNT: '1'
+      SERVER_WORKER_CONNECTIONS: '20'
+      SQLALCHEMY_POOL_SIZE: '5'
+      SQLALCHEMY_MAX_OVERFLOW: '5'
+      CELERY_WORKER_AMOUNT: '1'
+      CELERY_WORKER_CLASS: gevent
+      GUNICORN_TIMEOUT: '1800'
+      TEXT_GENERATION_TIMEOUT_MS: '1800000'
+      APP_MAX_EXECUTION_TIME: '1800'
+      WORKFLOW_MAX_EXECUTION_TIME: '1800'
+      ENABLE_COLLABORATION_MODE: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      ENABLE_EMAIL_PASSWORD_LOGIN: 'true'
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:5001/health
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      dify:
+        aliases:
+        - api
+      data: {}
+    volumes:
+    - dify-storage:/app/api/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dify-redis:
+        condition: service_healthy
+      dify-init-permissions:
+        condition: service_completed_successfully
+      milvus-init:
+        condition: service_completed_successfully
+  dify-api-websocket:
+    restart: unless-stopped
+    image: langgenius/dify-api:1.17.1@sha256:ceede5b903afaa20348f7ad80ebf847379dc56d886a99b9ec6a08913dacd7732
+    environment:
+      MODE: api
+      SERVER_WORKER_AMOUNT: '1'
+      SERVER_WORKER_CLASS: ${API_WEBSOCKET_WORKER_CLASS:-geventwebsocket.gunicorn.workers.GeventWebSocketWorker}
+      SERVER_WORKER_CONNECTIONS: '20'
+      GUNICORN_TIMEOUT: '1800'
+      DEPLOY_ENV: PRODUCTION
+      SECRET_KEY: ${DIFY_SECRET_KEY:?initialize configuration}
+      DB_TYPE: postgresql
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      DB_USERNAME: dify
+      DB_PASSWORD: ${DIFY_DB_PASSWORD}
+      DB_DATABASE: dify
+      REDIS_HOST: dify-redis
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD}
+      REDIS_DB: '0'
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD}@dify-redis:6379/1
+      STORAGE_TYPE: opendal
+      OPENDAL_SCHEME: fs
+      OPENDAL_FS_ROOT: storage
+      VECTOR_STORE: milvus
+      MILVUS_URI: http://milvus:19530
+      MILVUS_DATABASE: dify
+      MILVUS_USER: ''
+      MILVUS_PASSWORD: ''
+      MILVUS_ENABLE_HYBRID_SEARCH: 'true'
+      CODE_EXECUTION_ENDPOINT: http://dify-sandbox:8194
+      CODE_EXECUTION_API_KEY: ${DIFY_SANDBOX_KEY}
+      SSRF_PROXY_HTTP_URL: http://dify-ssrf-proxy:3128
+      SSRF_PROXY_HTTPS_URL: http://dify-ssrf-proxy:3128
+      PLUGIN_DAEMON_URL: http://dify-plugin-daemon:5002
+      PLUGIN_DAEMON_KEY: ${DIFY_PLUGIN_KEY}
+      INNER_API_KEY_FOR_PLUGIN: ${DIFY_INNER_KEY}
+      PLUGIN_DIFY_INNER_API_KEY: ${DIFY_INNER_KEY}
+      AGENT_BACKEND_BASE_URL: http://dify-agent-backend:5050
+      AGENT_BACKEND_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      DIFY_AGENT_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      CONSOLE_WEB_URL: http://127.0.0.1:18081
+      CONSOLE_API_URL: http://127.0.0.1:18081
+      APP_WEB_URL: http://127.0.0.1:18081
+      APP_API_URL: http://127.0.0.1:18081
+      SERVICE_API_URL: http://127.0.0.1:18081
+      FILES_URL: http://127.0.0.1:18081
+      INTERNAL_FILES_URL: http://dify-api:5001
+      SQLALCHEMY_POOL_SIZE: '5'
+      SQLALCHEMY_MAX_OVERFLOW: '5'
+      CELERY_WORKER_AMOUNT: '1'
+      CELERY_WORKER_CLASS: gevent
+      TEXT_GENERATION_TIMEOUT_MS: '1800000'
+      APP_MAX_EXECUTION_TIME: '1800'
+      WORKFLOW_MAX_EXECUTION_TIME: '1800'
+      ENABLE_COLLABORATION_MODE: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      ENABLE_EMAIL_PASSWORD_LOGIN: 'true'
+    networks:
+    - dify
+    - data
+    volumes:
+    - dify-storage:/app/api/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dify-redis:
+        condition: service_healthy
+      dify-init-permissions:
+        condition: service_completed_successfully
+      milvus-init:
+        condition: service_completed_successfully
+  dify-worker:
+    restart: unless-stopped
+    image: langgenius/dify-api:1.17.1@sha256:ceede5b903afaa20348f7ad80ebf847379dc56d886a99b9ec6a08913dacd7732
+    environment:
+      MODE: worker
+      SENTRY_DSN: ${API_SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${API_SENTRY_TRACES_SAMPLE_RATE:-1.0}
+      SENTRY_PROFILES_SAMPLE_RATE: ${API_SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      PLUGIN_MAX_PACKAGE_SIZE: ${PLUGIN_MAX_PACKAGE_SIZE:-52428800}
+      INNER_API_KEY_FOR_PLUGIN: ${DIFY_INNER_KEY}
+      AGENT_BACKEND_BASE_URL: http://dify-agent-backend:5050
+      AGENT_BACKEND_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      DEPLOY_ENV: PRODUCTION
+      SECRET_KEY: ${DIFY_SECRET_KEY:?initialize configuration}
+      DB_TYPE: postgresql
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      DB_USERNAME: dify
+      DB_PASSWORD: ${DIFY_DB_PASSWORD}
+      DB_DATABASE: dify
+      REDIS_HOST: dify-redis
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD}
+      REDIS_DB: '0'
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD}@dify-redis:6379/1
+      STORAGE_TYPE: opendal
+      OPENDAL_SCHEME: fs
+      OPENDAL_FS_ROOT: storage
+      VECTOR_STORE: milvus
+      MILVUS_URI: http://milvus:19530
+      MILVUS_DATABASE: dify
+      MILVUS_USER: ''
+      MILVUS_PASSWORD: ''
+      MILVUS_ENABLE_HYBRID_SEARCH: 'true'
+      CODE_EXECUTION_ENDPOINT: http://dify-sandbox:8194
+      CODE_EXECUTION_API_KEY: ${DIFY_SANDBOX_KEY}
+      SSRF_PROXY_HTTP_URL: http://dify-ssrf-proxy:3128
+      SSRF_PROXY_HTTPS_URL: http://dify-ssrf-proxy:3128
+      PLUGIN_DAEMON_URL: http://dify-plugin-daemon:5002
+      PLUGIN_DAEMON_KEY: ${DIFY_PLUGIN_KEY}
+      PLUGIN_DIFY_INNER_API_KEY: ${DIFY_INNER_KEY}
+      DIFY_AGENT_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      CONSOLE_WEB_URL: http://127.0.0.1:18081
+      CONSOLE_API_URL: http://127.0.0.1:18081
+      APP_WEB_URL: http://127.0.0.1:18081
+      APP_API_URL: http://127.0.0.1:18081
+      SERVICE_API_URL: http://127.0.0.1:18081
+      FILES_URL: http://127.0.0.1:18081
+      INTERNAL_FILES_URL: http://dify-api:5001
+      SERVER_WORKER_AMOUNT: '1'
+      SERVER_WORKER_CONNECTIONS: '20'
+      SQLALCHEMY_POOL_SIZE: '5'
+      SQLALCHEMY_MAX_OVERFLOW: '5'
+      CELERY_WORKER_AMOUNT: '1'
+      CELERY_WORKER_CLASS: gevent
+      GUNICORN_TIMEOUT: '1800'
+      TEXT_GENERATION_TIMEOUT_MS: '1800000'
+      APP_MAX_EXECUTION_TIME: '1800'
+      WORKFLOW_MAX_EXECUTION_TIME: '1800'
+      ENABLE_COLLABORATION_MODE: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      ENABLE_EMAIL_PASSWORD_LOGIN: 'true'
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - celery -A celery_healthcheck.celery inspect ping
+      interval: ${COMPOSE_WORKER_HEALTHCHECK_INTERVAL:-30s}
+      timeout: ${COMPOSE_WORKER_HEALTHCHECK_TIMEOUT:-30s}
+      retries: 3
+      start_period: 60s
+      disable: ${COMPOSE_WORKER_HEALTHCHECK_DISABLED:-true}
+    networks:
+    - dify
+    - data
+    volumes:
+    - dify-storage:/app/api/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dify-redis:
+        condition: service_healthy
+      dify-init-permissions:
+        condition: service_completed_successfully
+      milvus-init:
+        condition: service_completed_successfully
+  dify-worker-beat:
+    restart: unless-stopped
+    image: langgenius/dify-api:1.17.1@sha256:ceede5b903afaa20348f7ad80ebf847379dc56d886a99b9ec6a08913dacd7732
+    environment:
+      MODE: beat
+      DEPLOY_ENV: PRODUCTION
+      SECRET_KEY: ${DIFY_SECRET_KEY:?initialize configuration}
+      DB_TYPE: postgresql
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      DB_USERNAME: dify
+      DB_PASSWORD: ${DIFY_DB_PASSWORD}
+      DB_DATABASE: dify
+      REDIS_HOST: dify-redis
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD}
+      REDIS_DB: '0'
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD}@dify-redis:6379/1
+      STORAGE_TYPE: opendal
+      OPENDAL_SCHEME: fs
+      OPENDAL_FS_ROOT: storage
+      VECTOR_STORE: milvus
+      MILVUS_URI: http://milvus:19530
+      MILVUS_DATABASE: dify
+      MILVUS_USER: ''
+      MILVUS_PASSWORD: ''
+      MILVUS_ENABLE_HYBRID_SEARCH: 'true'
+      CODE_EXECUTION_ENDPOINT: http://dify-sandbox:8194
+      CODE_EXECUTION_API_KEY: ${DIFY_SANDBOX_KEY}
+      SSRF_PROXY_HTTP_URL: http://dify-ssrf-proxy:3128
+      SSRF_PROXY_HTTPS_URL: http://dify-ssrf-proxy:3128
+      PLUGIN_DAEMON_URL: http://dify-plugin-daemon:5002
+      PLUGIN_DAEMON_KEY: ${DIFY_PLUGIN_KEY}
+      INNER_API_KEY_FOR_PLUGIN: ${DIFY_INNER_KEY}
+      PLUGIN_DIFY_INNER_API_KEY: ${DIFY_INNER_KEY}
+      AGENT_BACKEND_BASE_URL: http://dify-agent-backend:5050
+      AGENT_BACKEND_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      DIFY_AGENT_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      CONSOLE_WEB_URL: http://127.0.0.1:18081
+      CONSOLE_API_URL: http://127.0.0.1:18081
+      APP_WEB_URL: http://127.0.0.1:18081
+      APP_API_URL: http://127.0.0.1:18081
+      SERVICE_API_URL: http://127.0.0.1:18081
+      FILES_URL: http://127.0.0.1:18081
+      INTERNAL_FILES_URL: http://dify-api:5001
+      SERVER_WORKER_AMOUNT: '1'
+      SERVER_WORKER_CONNECTIONS: '20'
+      SQLALCHEMY_POOL_SIZE: '5'
+      SQLALCHEMY_MAX_OVERFLOW: '5'
+      CELERY_WORKER_AMOUNT: '1'
+      CELERY_WORKER_CLASS: gevent
+      GUNICORN_TIMEOUT: '1800'
+      TEXT_GENERATION_TIMEOUT_MS: '1800000'
+      APP_MAX_EXECUTION_TIME: '1800'
+      WORKFLOW_MAX_EXECUTION_TIME: '1800'
+      ENABLE_COLLABORATION_MODE: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      ENABLE_EMAIL_PASSWORD_LOGIN: 'true'
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - celery -A celery_healthcheck.celery inspect ping
+      interval: ${COMPOSE_WORKER_HEALTHCHECK_INTERVAL:-30s}
+      timeout: ${COMPOSE_WORKER_HEALTHCHECK_TIMEOUT:-30s}
+      retries: 3
+      start_period: 60s
+      disable: ${COMPOSE_WORKER_HEALTHCHECK_DISABLED:-true}
+    networks:
+    - dify
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dify-redis:
+        condition: service_healthy
+      dify-init-permissions:
+        condition: service_completed_successfully
+  dify-web:
+    image: langgenius/dify-web:1.17.1@sha256:6353fe8e04481aaef873ef7317507bfa9ac862572118fd037563a71bff9f4d08
+    restart: unless-stopped
+    environment:
+      CONSOLE_API_URL: http://127.0.0.1:18081
+      SERVER_CONSOLE_API_URL: http://dify-api:5001
+      APP_API_URL: http://127.0.0.1:18081
+      AMPLITUDE_API_KEY: ${AMPLITUDE_API_KEY:-}
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-}
+      NEXT_PUBLIC_COOKIE_DOMAIN: ${NEXT_PUBLIC_COOKIE_DOMAIN:-}
+      NEXT_PUBLIC_SOCKET_URL: ws://127.0.0.1:18081
+      SENTRY_DSN: ${WEB_SENTRY_DSN:-}
+      NEXT_TELEMETRY_DISABLED: '1'
+      EXPERIMENTAL_ENABLE_VINEXT: ${EXPERIMENTAL_ENABLE_VINEXT:-false}
+      TEXT_GENERATION_TIMEOUT_MS: ${TEXT_GENERATION_TIMEOUT_MS:-60000}
+      CSP_WHITELIST: ${CSP_WHITELIST:-}
+      ALLOW_EMBED: ${ALLOW_EMBED:-false}
+      ALLOW_UNSAFE_DATA_SCHEME: ${ALLOW_UNSAFE_DATA_SCHEME:-false}
+      MARKETPLACE_API_URL: ${MARKETPLACE_API_URL:-https://marketplace.dify.ai}
+      MARKETPLACE_URL: ${MARKETPLACE_URL:-https://marketplace.dify.ai}
+      TOP_K_MAX_VALUE: ${TOP_K_MAX_VALUE:-10}
+      INDEXING_MAX_SEGMENTATION_TOKENS_LENGTH: ${INDEXING_MAX_SEGMENTATION_TOKENS_LENGTH:-4000}
+      LOOP_NODE_MAX_COUNT: ${LOOP_NODE_MAX_COUNT:-100}
+      MAX_TOOLS_NUM: ${MAX_TOOLS_NUM:-10}
+      MAX_PARALLEL_LIMIT: ${MAX_PARALLEL_LIMIT:-10}
+      MAX_ITERATIONS_NUM: ${MAX_ITERATIONS_NUM:-99}
+      MAX_TREE_DEPTH: ${MAX_TREE_DEPTH:-50}
+      ENABLE_WEBSITE_JINAREADER: ${ENABLE_WEBSITE_JINAREADER:-true}
+      ENABLE_WEBSITE_FIRECRAWL: ${ENABLE_WEBSITE_FIRECRAWL:-true}
+      ENABLE_WEBSITE_WATERCRAWL: ${ENABLE_WEBSITE_WATERCRAWL:-true}
+    networks:
+    - dify
+  dify-sandbox:
+    image: langgenius/dify-sandbox:0.2.15@sha256:750e1111426ef31a9217b81c98cccfb750f17b182af3221102e420afa9f0928e
+    restart: unless-stopped
+    environment:
+      API_KEY: ${DIFY_SANDBOX_KEY}
+      GIN_MODE: ${SANDBOX_GIN_MODE:-release}
+      WORKER_TIMEOUT: ${SANDBOX_WORKER_TIMEOUT:-15}
+      ENABLE_NETWORK: ${SANDBOX_ENABLE_NETWORK:-true}
+      HTTP_PROXY: http://dify-ssrf-proxy:3128
+      HTTPS_PROXY: http://dify-ssrf-proxy:3128
+      SANDBOX_PORT: ${SANDBOX_PORT:-8194}
+      PIP_MIRROR_URL: ${PIP_MIRROR_URL:-}
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8194/health
+    networks:
+    - dify-sandbox
+    volumes:
+    - dify-sandbox-deps:/dependencies
+    - dify-sandbox-conf:/conf
+  dify-plugin-daemon:
+    image: langgenius/dify-plugin-daemon:0.6.10-local@sha256:34412a22d1e1d1a6c73727fef88cffbcdd9be7a21bf9ad3076b4bf5c1b88fd9b
+    restart: unless-stopped
+    environment:
+      HTTP_PROXY: http://host.docker.internal:7897
+      HTTPS_PROXY: http://host.docker.internal:7897
+      NO_PROXY: localhost,127.0.0.1,dify-api,dify-plugin-daemon,dify-redis,postgres,milvus,model-gateway,platform-api
+      UV_HTTP_TIMEOUT: '60'
+      UV_HTTP_CONCURRENT_DOWNLOADS: '8'
+      UV_NO_INDEX: 'true'
+      UV_FIND_LINKS: /offline-wheels
+      DB_DATABASE: dify_plugin
+      DB_SSL_MODE: ${DB_SSL_MODE:-disable}
+      SERVER_PORT: ${PLUGIN_DAEMON_PORT:-5002}
+      SERVER_KEY: ${DIFY_PLUGIN_KEY}
+      MAX_PLUGIN_PACKAGE_SIZE: ${PLUGIN_MAX_PACKAGE_SIZE:-52428800}
+      PPROF_ENABLED: ${PLUGIN_PPROF_ENABLED:-false}
+      DIFY_INNER_API_URL: http://dify-api:5001
+      DIFY_INNER_API_KEY: ${DIFY_INNER_KEY}
+      PLUGIN_REMOTE_INSTALLING_HOST: ${PLUGIN_DEBUGGING_HOST:-0.0.0.0}
+      PLUGIN_REMOTE_INSTALLING_PORT: ${PLUGIN_DEBUGGING_PORT:-5003}
+      PLUGIN_WORKING_PATH: ${PLUGIN_WORKING_PATH:-/app/storage/cwd}
+      FORCE_VERIFYING_SIGNATURE: ${FORCE_VERIFYING_SIGNATURE:-true}
+      PYTHON_ENV_INIT_TIMEOUT: '600'
+      PLUGIN_MAX_EXECUTION_TIMEOUT: ${PLUGIN_MAX_EXECUTION_TIMEOUT:-600}
+      PLUGIN_STDIO_BUFFER_SIZE: ${PLUGIN_STDIO_BUFFER_SIZE:-1024}
+      PLUGIN_STDIO_MAX_BUFFER_SIZE: ${PLUGIN_STDIO_MAX_BUFFER_SIZE:-5242880}
+      PIP_MIRROR_URL: https://pypi.org/simple
+      PLUGIN_STORAGE_TYPE: ${PLUGIN_STORAGE_TYPE:-local}
+      PLUGIN_STORAGE_LOCAL_ROOT: ${PLUGIN_STORAGE_LOCAL_ROOT:-/app/storage}
+      PLUGIN_INSTALLED_PATH: ${PLUGIN_INSTALLED_PATH:-plugin}
+      PLUGIN_PACKAGE_CACHE_PATH: ${PLUGIN_PACKAGE_CACHE_PATH:-plugin_packages}
+      PLUGIN_MEDIA_CACHE_PATH: ${PLUGIN_MEDIA_CACHE_PATH:-assets}
+      PLUGIN_STORAGE_OSS_BUCKET: ${PLUGIN_STORAGE_OSS_BUCKET:-}
+      S3_USE_AWS_MANAGED_IAM: ${PLUGIN_S3_USE_AWS_MANAGED_IAM:-false}
+      S3_USE_AWS: ${PLUGIN_S3_USE_AWS:-false}
+      S3_ENDPOINT: ${PLUGIN_S3_ENDPOINT:-}
+      S3_USE_PATH_STYLE: ${PLUGIN_S3_USE_PATH_STYLE:-false}
+      AWS_ACCESS_KEY: ${PLUGIN_AWS_ACCESS_KEY:-}
+      AWS_SECRET_KEY: ${PLUGIN_AWS_SECRET_KEY:-}
+      AWS_REGION: ${PLUGIN_AWS_REGION:-}
+      AZURE_BLOB_STORAGE_CONNECTION_STRING: ${PLUGIN_AZURE_BLOB_STORAGE_CONNECTION_STRING:-}
+      AZURE_BLOB_STORAGE_CONTAINER_NAME: ${PLUGIN_AZURE_BLOB_STORAGE_CONTAINER_NAME:-}
+      TENCENT_COS_SECRET_KEY: ${PLUGIN_TENCENT_COS_SECRET_KEY:-}
+      TENCENT_COS_SECRET_ID: ${PLUGIN_TENCENT_COS_SECRET_ID:-}
+      TENCENT_COS_REGION: ${PLUGIN_TENCENT_COS_REGION:-}
+      ALIYUN_OSS_REGION: ${PLUGIN_ALIYUN_OSS_REGION:-}
+      ALIYUN_OSS_ENDPOINT: ${PLUGIN_ALIYUN_OSS_ENDPOINT:-}
+      ALIYUN_OSS_ACCESS_KEY_ID: ${PLUGIN_ALIYUN_OSS_ACCESS_KEY_ID:-}
+      ALIYUN_OSS_ACCESS_KEY_SECRET: ${PLUGIN_ALIYUN_OSS_ACCESS_KEY_SECRET:-}
+      ALIYUN_OSS_AUTH_VERSION: ${PLUGIN_ALIYUN_OSS_AUTH_VERSION:-v4}
+      ALIYUN_OSS_PATH: ${PLUGIN_ALIYUN_OSS_PATH:-}
+      VOLCENGINE_TOS_ENDPOINT: ${PLUGIN_VOLCENGINE_TOS_ENDPOINT:-}
+      VOLCENGINE_TOS_ACCESS_KEY: ${PLUGIN_VOLCENGINE_TOS_ACCESS_KEY:-}
+      VOLCENGINE_TOS_SECRET_KEY: ${PLUGIN_VOLCENGINE_TOS_SECRET_KEY:-}
+      VOLCENGINE_TOS_REGION: ${PLUGIN_VOLCENGINE_TOS_REGION:-}
+      SENTRY_ENABLED: ${PLUGIN_SENTRY_ENABLED:-false}
+      SENTRY_DSN: ${PLUGIN_SENTRY_DSN:-}
+      DEPLOY_ENV: PRODUCTION
+      SECRET_KEY: ${DIFY_SECRET_KEY:?initialize configuration}
+      DB_TYPE: postgresql
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      DB_USERNAME: dify_plugin
+      DB_PASSWORD: ${DIFY_PLUGIN_DB_PASSWORD}
+      REDIS_HOST: dify-redis
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ${DIFY_REDIS_PASSWORD}
+      REDIS_DB: '0'
+      CELERY_BROKER_URL: redis://:${DIFY_REDIS_PASSWORD}@dify-redis:6379/1
+      STORAGE_TYPE: opendal
+      OPENDAL_SCHEME: fs
+      OPENDAL_FS_ROOT: storage
+      VECTOR_STORE: milvus
+      MILVUS_URI: http://milvus:19530
+      MILVUS_DATABASE: dify
+      MILVUS_USER: ''
+      MILVUS_PASSWORD: ''
+      MILVUS_ENABLE_HYBRID_SEARCH: 'true'
+      CODE_EXECUTION_ENDPOINT: http://dify-sandbox:8194
+      CODE_EXECUTION_API_KEY: ${DIFY_SANDBOX_KEY}
+      SSRF_PROXY_HTTP_URL: http://dify-ssrf-proxy:3128
+      SSRF_PROXY_HTTPS_URL: http://dify-ssrf-proxy:3128
+      PLUGIN_DAEMON_URL: http://dify-plugin-daemon:5002
+      PLUGIN_DAEMON_KEY: ${DIFY_PLUGIN_KEY}
+      INNER_API_KEY_FOR_PLUGIN: ${DIFY_INNER_KEY}
+      PLUGIN_DIFY_INNER_API_KEY: ${DIFY_INNER_KEY}
+      AGENT_BACKEND_BASE_URL: http://dify-agent-backend:5050
+      AGENT_BACKEND_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      DIFY_AGENT_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+      CONSOLE_WEB_URL: http://127.0.0.1:18081
+      CONSOLE_API_URL: http://127.0.0.1:18081
+      APP_WEB_URL: http://127.0.0.1:18081
+      APP_API_URL: http://127.0.0.1:18081
+      SERVICE_API_URL: http://127.0.0.1:18081
+      FILES_URL: http://127.0.0.1:18081
+      INTERNAL_FILES_URL: http://dify-api:5001
+      SERVER_WORKER_AMOUNT: '1'
+      SERVER_WORKER_CONNECTIONS: '20'
+      SQLALCHEMY_POOL_SIZE: '5'
+      SQLALCHEMY_MAX_OVERFLOW: '5'
+      CELERY_WORKER_AMOUNT: '1'
+      CELERY_WORKER_CLASS: gevent
+      GUNICORN_TIMEOUT: '1800'
+      TEXT_GENERATION_TIMEOUT_MS: '1800000'
+      APP_MAX_EXECUTION_TIME: '1800'
+      WORKFLOW_MAX_EXECUTION_TIME: '1800'
+      ENABLE_COLLABORATION_MODE: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+      ENABLE_EMAIL_PASSWORD_LOGIN: 'true'
+    networks:
+    - dify
+    - egress
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dify-redis:
+        condition: service_healthy
+    volumes:
+    - dify-plugins:/app/storage
+    - ./infra/dify/wheels:/offline-wheels:ro
+  dify-agent-backend:
+    image: langgenius/dify-agent-backend:1.17.1@sha256:a30c039bbead65d7fd8baf8c53fc867373f515c5721e46070ce03ed04c5f1e32
+    restart: unless-stopped
+    environment:
+      DIFY_AGENT_REDIS_URL: redis://:${DIFY_REDIS_PASSWORD}@dify-redis:6379/2
+      DIFY_AGENT_PLUGIN_DAEMON_URL: http://dify-plugin-daemon:5002
+      DIFY_AGENT_PLUGIN_DAEMON_API_KEY: ${DIFY_PLUGIN_KEY}
+      DIFY_AGENT_INNER_API_URL: http://dify-api:5001
+      DIFY_AGENT_INNER_API_KEY: ${DIFY_INNER_KEY}
+      DIFY_AGENT_RUNTIME_BACKEND: ${DIFY_AGENT_RUNTIME_BACKEND:-local}
+      DIFY_AGENT_LOCAL_SANDBOX_ENDPOINT: http://dify-local-sandbox:5004
+      DIFY_AGENT_LOCAL_SANDBOX_AUTH_TOKEN: ${DIFY_SHELL_TOKEN}
+      DIFY_AGENT_STUB_API_BASE_URL: http://dify-agent-backend:5050/agent-stub
+      DIFY_AGENT_SANDBOX_FILES_BASE_URL: http://dify-api:5001
+      DIFY_AGENT_SERVER_SECRET_KEY: ${DIFY_AGENT_SECRET}
+      DIFY_AGENT_API_TOKEN: ${DIFY_AGENT_API_TOKEN}
+    networks:
+      dify:
+        aliases:
+        - agent_backend
+      dify-agent: {}
+    depends_on:
+      dify-redis:
+        condition: service_healthy
+      dify-plugin-daemon:
+        condition: service_started
+  dify-local-sandbox:
+    image: langgenius/dify-agent-local-sandbox:1.17.1@sha256:f4d404c9dcdf80bd72f65e84c3f2bbd1f3404fd4b363db837176da8aaf771b1d
+    restart: unless-stopped
+    environment:
+      SHELLCTL_AUTH_TOKEN: ${DIFY_SHELL_TOKEN}
+      HTTP_PROXY: http://dify-agent-ssrf-proxy:3128
+      HTTPS_PROXY: http://dify-agent-ssrf-proxy:3128
+      NO_PROXY: localhost,127.0.0.1
+    healthcheck:
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:5004/healthz
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+    - dify-agent
+    - dify-agent-proxy
+    volumes:
+    - dify-agent-home:/home/dify
+    - dify-agent-workspace:/workspace
+  dify-agent-ssrf-proxy:
+    image: ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029
+    restart: unless-stopped
+    entrypoint:
+    - sh
+    - -c
+    - "cp /docker-entrypoint-mount.sh /docker-entrypoint.sh && sed -i 's/\r$$//' /docker-entrypoint.sh\
+      \ && chmod +x /docker-entrypoint.sh && /docker-entrypoint.sh"
+    environment:
+      HTTP_PORT: ${SSRF_HTTP_PORT:-3128}
+      COREDUMP_DIR: ${SSRF_COREDUMP_DIR:-/var/spool/squid}
+      SSRF_PROXY_ALLOW_PRIVATE_IPS: ${SSRF_PROXY_ALLOW_PRIVATE_IPS:-}
+      SSRF_PROXY_ALLOW_PRIVATE_DOMAINS: dify-api,dify-agent-backend
+    networks:
+    - dify
+    - dify-agent-proxy
+    - egress
+    volumes:
+    - ./infra/dify/upstream/docker/ssrf_proxy/squid-agent.conf.template:/etc/squid/squid.conf.template:ro
+    - ./infra/dify/upstream/docker/ssrf_proxy/squid-common.conf.template:/etc/squid/dify_common.conf.template:ro
+    - ./infra/dify/upstream/docker/ssrf_proxy/docker-agent-entrypoint.sh:/docker-entrypoint-mount.sh:ro
+  dify-ssrf-proxy:
+    image: ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029
+    restart: unless-stopped
+    entrypoint:
+    - sh
+    - -c
+    - "cp /docker-entrypoint-mount.sh /docker-entrypoint.sh && sed -i 's/\r$$//' /docker-entrypoint.sh\
+      \ && chmod +x /docker-entrypoint.sh && /docker-entrypoint.sh"
+    environment:
+      HTTP_PORT: ${SSRF_HTTP_PORT:-3128}
+      COREDUMP_DIR: ${SSRF_COREDUMP_DIR:-/var/spool/squid}
+      SSRF_PROXY_ALLOW_PRIVATE_IPS: ${SSRF_PROXY_ALLOW_PRIVATE_IPS:-}
+      SSRF_PROXY_ALLOW_PRIVATE_DOMAINS: model-gateway,platform-api
+    networks:
+    - dify
+    - dify-sandbox
+    - egress
+    - data
+    volumes:
+    - ./infra/dify/upstream/docker/ssrf_proxy/squid.conf.template:/etc/squid/squid.conf.template:ro
+    - ./infra/dify/upstream/docker/ssrf_proxy/squid-common.conf.template:/etc/squid/dify_common.conf.template:ro
+    - ./infra/dify/upstream/docker/ssrf_proxy/docker-entrypoint.sh:/docker-entrypoint-mount.sh:ro
+  dify-nginx:
+    image: nginx:1.28.0-alpine@sha256:30f1c0d78e0ad60901648be663a710bdadf19e4c10ac6782c235200619158284
+    restart: unless-stopped
+    networks:
+    - dify
+    - application
+    volumes:
+    - ./infra/dify/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+    - 127.0.0.1:18081:80
+    depends_on:
+      dify-api:
+        condition: service_started
+      dify-web:
+        condition: service_started
+      dify-api-websocket:
+        condition: service_started
+  milvus-init:
+    image: talent-platform-api:0.2.0
+    restart: 'no'
+    command:
+    - python
+    - /bootstrap/init_milvus.py
+    volumes:
+    - ./infra/init_milvus.py:/bootstrap/init_milvus.py:ro
+    networks:
+    - data
+    depends_on:
+      milvus:
+        condition: service_healthy
+networks:
+  data:
+    internal: true
+  application: {}
+  dify:
+    internal: true
+  dify-sandbox:
+    internal: true
+  dify-agent:
+    internal: true
+  dify-agent-proxy:
+    internal: true
+  egress: {}
+volumes:
+  postgres: {}
+  mysql: {}
+  redis: {}
+  etcd: {}
+  minio: {}
+  milvus: {}
+  app-data: {}
+  dify-redis: {}
+  dify-storage: {}
+  dify-sandbox-deps: {}
+  dify-sandbox-conf: {}
+  dify-plugins: {}
+  dify-agent-home: {}
+  dify-agent-workspace: {}
+  mineru-models:
+    external: true
+    name: talent-agent_mineru-models

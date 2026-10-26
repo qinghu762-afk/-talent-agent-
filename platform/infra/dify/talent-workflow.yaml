@@ -1,0 +1,167 @@
+version: 0.3.0
+kind: app
+app:
+  name: 人才平台通用工作流
+  mode: workflow
+  description: 本地证据分析：人才、岗位、匹配、知识、培训与报告。
+  icon: 🤝
+  icon_background: '#E8F1EC'
+  use_icon_as_answer_icon: false
+dependencies: []
+workflow:
+  graph:
+    nodes:
+    - id: start
+      type: custom
+      position:
+        x: 50
+        y: 180
+      data:
+        type: start
+        title: 业务提示输入
+        desc: ''
+        variables:
+        - variable: prompt
+          label: 业务提示
+          type: paragraph
+          required: true
+          max_length: 150000
+      width: 244
+      height: 96
+    - id: llm
+      type: custom
+      position:
+        x: 380
+        y: 180
+      data:
+        type: llm
+        title: 本地证据分析
+        desc: ''
+        context:
+          enabled: false
+          variable_selector: []
+        model:
+          provider: langgenius/ollama/ollama
+          name: qwen3:4b
+          mode: chat
+          completion_params:
+            temperature: 0
+            think: false
+            format: json
+            num_ctx: 8192
+            num_predict: 4000
+            json_schema: "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"\
+              profile\": {\n      \"type\": \"object\",\n      \"properties\": {\n\
+              \        \"name\": {\"type\": [\"string\", \"null\"]},\n        \"phone\"\
+              : {\"type\": [\"string\", \"null\"]},\n        \"email\": {\"type\"\
+              : [\"string\", \"null\"]},\n        \"location\": {\"type\": [\"string\"\
+              , \"null\"]},\n        \"skills\": {\"type\": \"array\", \"items\":\
+              \ {\"type\": \"string\"}},\n        \"education\": {\"type\": \"array\"\
+              , \"items\": {\"type\": \"object\"}},\n        \"experiences\": {\"\
+              type\": \"array\", \"items\": {\"type\": \"object\"}},\n        \"projects\"\
+              : {\"type\": \"array\", \"items\": {\"type\": \"object\"}},\n      \
+              \  \"certificates\": {\"type\": \"array\", \"items\": {\"type\": \"\
+              string\"}},\n        \"intentions\": {\"type\": \"array\", \"items\"\
+              : {\"type\": \"string\"}},\n        \"evidence\": {\"$ref\": \"#/$defs/evidence\"\
+              }\n      },\n      \"required\": [\"evidence\"],\n      \"additionalProperties\"\
+              : false\n    },\n    \"requirements\": {\n      \"type\": \"object\"\
+              ,\n      \"properties\": {\n        \"required_skills\": {\"type\":\
+              \ \"array\", \"items\": {\"type\": \"string\"}},\n        \"preferred_skills\"\
+              : {\"type\": \"array\", \"items\": {\"type\": \"string\"}},\n      \
+              \  \"min_experience_months\": {\"type\": [\"number\", \"null\"], \"\
+              minimum\": 0},\n        \"min_education\": {\"type\": [\"string\", \"\
+              null\"]},\n        \"location\": {\"type\": [\"string\", \"null\"]},\n\
+              \        \"required_certificates\": {\"type\": \"array\", \"items\"\
+              : {\"type\": \"string\"}},\n        \"responsibilities\": {\"type\"\
+              : \"array\", \"items\": {\"type\": \"string\"}},\n        \"evidence\"\
+              : {\"$ref\": \"#/$defs/evidence\"}\n      },\n      \"required\": [\"\
+              evidence\"],\n      \"additionalProperties\": false\n    },\n    \"\
+              answer\": {\"type\": \"string\"},\n    \"citations\": {\"type\": \"\
+              array\", \"items\": {\"type\": \"object\", \"properties\": {\"source_id\"\
+              : {\"type\": \"string\"}, \"quote\": {\"type\": \"string\"}}, \"required\"\
+              : [\"source_id\", \"quote\"], \"additionalProperties\": false}},\n \
+              \   \"order\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"\
+              }},\n    \"title\": {\"type\": \"string\"},\n    \"course_ids\": {\"\
+              type\": \"array\", \"items\": {\"type\": \"string\"}},\n    \"reasons\"\
+              : {\"type\": \"object\", \"additionalProperties\": {\"type\": \"string\"\
+              }},\n    \"scores\": {\"type\": \"array\", \"items\": {\"type\": \"\
+              object\", \"properties\": {\"question_id\": {\"type\": \"string\"},\
+              \ \"points\": {\"type\": \"number\"}, \"feedback\": {\"type\": \"string\"\
+              }}, \"required\": [\"question_id\", \"points\", \"feedback\"], \"additionalProperties\"\
+              : false}},\n    \"sql\": {\"type\": [\"string\", \"null\"]},\n    \"\
+              clarification\": {\"type\": [\"string\", \"null\"]}\n  },\n  \"additionalProperties\"\
+              : false,\n  \"$defs\": {\n    \"evidence\": {\"type\": \"array\", \"\
+              items\": {\"type\": \"object\", \"properties\": {\"field\": {\"type\"\
+              : \"string\"}, \"value\": {}, \"quote\": {\"type\": \"string\"}}, \"\
+              required\": [\"field\", \"value\", \"quote\"], \"additionalProperties\"\
+              : false}}\n  }\n}\n"
+        prompt_template:
+        - id: system
+          role: system
+          text: 你是企业人才平台的本地分析模型。严格遵循用户给出的结构和授权范围。只根据提供的材料作答，不虚构经历、分数、引用或数据。材料不足时明确标记未知。若要求JSON则仅输出合法JSON。
+        - id: user
+          role: user
+          text: '{{#start.prompt#}}'
+        vision:
+          enabled: false
+      width: 244
+      height: 96
+    - id: end
+      type: custom
+      position:
+        x: 710
+        y: 180
+      data:
+        type: end
+        title: 分析文本输出
+        desc: ''
+        outputs:
+        - variable: text
+          value_selector:
+          - llm
+          - text
+          value_type: string
+      width: 244
+      height: 96
+    edges:
+    - id: start-llm
+      type: custom
+      source: start
+      target: llm
+      sourceHandle: source
+      targetHandle: target
+      data:
+        sourceType: start
+        targetType: llm
+        isInIteration: false
+    - id: llm-end
+      type: custom
+      source: llm
+      target: end
+      sourceHandle: source
+      targetHandle: target
+      data:
+        sourceType: llm
+        targetType: end
+        isInIteration: false
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.8
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: ''
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+  environment_variables: []
+  conversation_variables: []

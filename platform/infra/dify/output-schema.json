@@ -1,0 +1,51 @@
+{
+  "type": "object",
+  "properties": {
+    "profile": {
+      "type": "object",
+      "properties": {
+        "name": {"type": ["string", "null"]},
+        "phone": {"type": ["string", "null"]},
+        "email": {"type": ["string", "null"]},
+        "location": {"type": ["string", "null"]},
+        "skills": {"type": "array", "items": {"type": "string"}},
+        "education": {"type": "array", "items": {"type": "object"}},
+        "experiences": {"type": "array", "items": {"type": "object"}},
+        "projects": {"type": "array", "items": {"type": "object"}},
+        "certificates": {"type": "array", "items": {"type": "string"}},
+        "intentions": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["evidence"],
+      "additionalProperties": false
+    },
+    "requirements": {
+      "type": "object",
+      "properties": {
+        "required_skills": {"type": "array", "items": {"type": "string"}},
+        "preferred_skills": {"type": "array", "items": {"type": "string"}},
+        "min_experience_months": {"type": ["number", "null"], "minimum": 0},
+        "min_education": {"type": ["string", "null"]},
+        "location": {"type": ["string", "null"]},
+        "required_certificates": {"type": "array", "items": {"type": "string"}},
+        "responsibilities": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      },
+      "required": ["evidence"],
+      "additionalProperties": false
+    },
+    "answer": {"type": "string"},
+    "citations": {"type": "array", "items": {"type": "object", "properties": {"source_id": {"type": "string"}, "quote": {"type": "string"}}, "required": ["source_id", "quote"], "additionalProperties": false}},
+    "order": {"type": "array", "items": {"type": "integer"}},
+    "title": {"type": "string"},
+    "course_ids": {"type": "array", "items": {"type": "string"}},
+    "reasons": {"type": "object", "additionalProperties": {"type": "string"}},
+    "scores": {"type": "array", "items": {"type": "object", "properties": {"question_id": {"type": "string"}, "points": {"type": "number"}, "feedback": {"type": "string"}}, "required": ["question_id", "points", "feedback"], "additionalProperties": false}},
+    "sql": {"type": ["string", "null"]},
+    "clarification": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "evidence": {"type": "array", "items": {"type": "object", "properties": {"field": {"type": "string"}, "value": {}, "quote": {"type": "string"}}, "required": ["field", "value", "quote"], "additionalProperties": false}}
+  }
+}

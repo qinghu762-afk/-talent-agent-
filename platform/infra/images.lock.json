@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "resolved_at": "2026-10-22T02:03:45.640870+00:00",
+  "images": {
+    "busybox@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616": "busybox@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616",
+    "langgenius/dify-agent-backend:1.17.1": "langgenius/dify-agent-backend:1.17.1@sha256:a30c039bbead65d7fd8baf8c53fc867373f515c5721e46070ce03ed04c5f1e32",
+    "langgenius/dify-agent-local-sandbox:1.17.1": "langgenius/dify-agent-local-sandbox:1.17.1@sha256:f4d404c9dcdf80bd72f65e84c3f2bbd1f3404fd4b363db837176da8aaf771b1d",
+    "langgenius/dify-api:1.17.1": "langgenius/dify-api:1.17.1@sha256:ceede5b903afaa20348f7ad80ebf847379dc56d886a99b9ec6a08913dacd7732",
+    "langgenius/dify-plugin-daemon:0.6.10-local": "langgenius/dify-plugin-daemon:0.6.10-local@sha256:34412a22d1e1d1a6c73727fef88cffbcdd9be7a21bf9ad3076b4bf5c1b88fd9b",
+    "langgenius/dify-sandbox:0.2.15": "langgenius/dify-sandbox:0.2.15@sha256:750e1111426ef31a9217b81c98cccfb750f17b182af3221102e420afa9f0928e",
+    "langgenius/dify-web:1.17.1": "langgenius/dify-web:1.17.1@sha256:6353fe8e04481aaef873ef7317507bfa9ac862572118fd037563a71bff9f4d08",
+    "milvusdb/milvus:v2.6.16": "milvusdb/milvus:v2.6.16@sha256:33a0f81a7343158a1c1e0454b151600074c34f561c069157712b930ca5ca1b04",
+    "mysql:8.0": "mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b",
+    "nginx:1.28.0-alpine": "nginx:1.28.0-alpine@sha256:30f1c0d78e0ad60901648be663a710bdadf19e4c10ac6782c235200619158284",
+    "node:22-bookworm-slim": "node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d",
+    "postgres:16.10-bookworm": "postgres:16.10-bookworm@sha256:38471f330eb885e04de130b768d6db4e10469e2311879c7e5c699f6d2d8a1c74",
+    "python:3.11.14-slim-bookworm": "python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d",
+    "quay.io/coreos/etcd:v3.5.25": "quay.io/coreos/etcd:v3.5.25@sha256:52f17f7e56e4f7239f0320dbfcbcc24721163d7d78ae710b466af3254ccf6366",
+    "redis:7.4.5-alpine": "redis:7.4.5-alpine@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08",
+    "ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029": "ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029",
+    "minio/minio:RELEASE.2024-05-28T17-19-04Z": "minio/minio:RELEASE.2024-05-28T17-19-04Z@sha256:391d1d45fdbe79944cb6de9337b073864bb9ee38c4c24280bfb39572e925af08",
+    "talent-agent-mineru:4.0.12": "talent-agent-mineru:4.0.12@sha256:294b3aa1183a728f474077f5223911e4f69e94847bddc9bbfd25c2c5dde55685"
+  },
+  "unresolved": {}
+}
